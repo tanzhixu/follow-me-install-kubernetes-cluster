@@ -22,6 +22,7 @@ mkdir -p /root/.kube/
 mkdir -p $YAML/dashboard
 mkdir -p $YAML/dns
 mkdir -p $YAML/heapster
+mkdir /data
 
 service iptables stop
 
@@ -49,6 +50,8 @@ FLANNEL_ETCD_PREFIX="/kubernetes/network"
 CLUSTER_KUBERNETES_SVC_IP="10.254.0.1"
 CLUSTER_DNS_SVC_IP="10.254.0.2"
 CLUSTER_DNS_DOMAIN="cluster.local."
+REGISTRY_DOMAIN="harbor.gqichina.com"
+REGISTRY_HUB="harbor.gqichina.com/ops/pod-infrastructure:rhel7"
 EOF
 
 source $BINDIR/environment.sh
@@ -585,7 +588,7 @@ Documentation=http://docs.docker.io
 [Service]
 Environment="PATH=/root/local/bin:/bin:/sbin:/usr/bin:/usr/sbin"
 EnvironmentFile=-/run/flannel/docker
-ExecStart=/root/local/bin/dockerd --log-level=error $DOCKER_NETWORK_OPTIONS --insecure-registry=harbor.gqichina.com
+ExecStart=/root/local/bin/dockerd --log-level=error $DOCKER_NETWORK_OPTIONS --insecure-registry=${REGISTRY_DOMAIN}
 ExecReload=/bin/kill -s HUP $MAINPID
 Restart=on-failure
 RestartSec=5
@@ -663,7 +666,7 @@ WorkingDirectory=/var/lib/kubelet
 ExecStart=/root/local/bin/kubelet \\
   --address=${NODE_IP} \\
   --hostname-override=${NODE_IP} \\
-  --pod-infra-container-image=harbor.gqichina.com/ops/pod-infrastructure:rhel7 \\
+  --pod-infra-container-image=${REGISTRY_HUB} \\
   --experimental-bootstrap-kubeconfig=/etc/kubernetes/bootstrap.kubeconfig \\
   --kubeconfig=/etc/kubernetes/kubelet.kubeconfig \\
   --require-kubeconfig \\
