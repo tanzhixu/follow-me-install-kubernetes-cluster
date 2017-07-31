@@ -46,7 +46,7 @@ CLUSTER_KUBERNETES_SVC_IP="10.254.0.1"
 CLUSTER_DNS_SVC_IP="10.254.0.2"
 CLUSTER_DNS_DOMAIN="cluster.local."
 REGISTRY_DOMAIN="harbor.gqichina.com"
-REGISTRY_HUB="harbor.gqichina.com/ops/pod-infrastructure:rhel7"
+BASE_PODS="harbor.gqichina.com/k8s/pod-infrastructure:rhel7"
 EOF
 
 source $BINDIR/environment.sh
@@ -116,7 +116,7 @@ CheckFileExist /etc/kubernetes/ssl/ca.pem
 cfssl gencert -ca=/etc/kubernetes/ssl/ca.pem \
 -ca-key=/etc/kubernetes/ssl/ca-key.pem \
 -config=/etc/kubernetes/ssl/ca-config.json \
--profile=kubernetes etcd-csr.json | cfssljson -bare etcd
+-profile=kubernetes etcd-csr.json 2>/dev/null | cfssljson -bare etcd
 sudo mv etcd*.pem $ETCDSSLDIR/
 
 sudo mkdir -p /var/lib/etcd
@@ -159,7 +159,6 @@ sudo mv etcd.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable etcd >/dev/null 2>&1
 sudo systemctl start etcd
-sudo systemctl status etcd
 # ------------------------------------------------------------------------------------
 
 # CHECK ETCD CLUSTER
@@ -188,17 +187,17 @@ cd $DEPLOYDIR
 if [ ! -f "$DEPLOYDIR/kubernetes-client-linux-amd64.tar.gz" ]; then
   wget -c https://dl.k8s.io/v1.6.2/kubernetes-client-linux-amd64.tar.gz -P $DEPLOYDIR
 fi
-tar -xzvf kubernetes-client-linux-amd64.tar.gz
+tar -xf kubernetes-client-linux-amd64.tar.gz
 sudo cp kubernetes/client/bin/kube* $BINDIR
 chmod a+x $BINDIR/kube*
 export PATH=$BINDIR:$PATH
-echo "KUBECTL CONFIG SUCCESS................................"
+echo "KUBECTL DEPLOY SUCCESS................................"
 # ------------------------------------------------------------------------------------
 
 # FLANNEL CONFIG
 # ------------------------------------------------------------------------------------
-echo "Wait Master Deploy Flannel..............................."
-read -p "Master Flannel Deploy Success:" input
+echo "WAITING MASTER DEPLOY FLANNEL..............................."
+read -p "MASTER FLANNEL DEPLOY SUCCESS?:" input
 if [ "$input" != "y" ]; then
   exit
 fi
@@ -226,10 +225,9 @@ EOF
 cfssl gencert -ca=$KUBESSLDIR/ca.pem \
 -ca-key=$KUBESSLDIR/ca-key.pem \
 -config=$KUBESSLDIR/ca-config.json \
--profile=kubernetes flanneld-csr.json | cfssljson -bare flanneld
+-profile=kubernetes flanneld-csr.json 2>/dev/null | cfssljson -bare flanneld
 sudo mv flanneld*.pem $FLANNELDDIR
 
-mkdir flannel
 if [ ! -f "$DEPLOYDIR/flannel-v0.7.1-linux-amd64.tar.gz" ]; then
   wget -c https://github.com/coreos/flannel/releases/download/v0.7.1/flannel-v0.7.1-linux-amd64.tar.gz -P $DEPLOYDIR
 fi
@@ -264,11 +262,10 @@ EOF
 
 sudo cp flanneld.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable flanneld >/dev/null 2>&1
+sudo systemctl enable flanneld
 sudo systemctl start flanneld
-sudo systemctl status flanneld
-journalctl  -u flanneld |grep 'Lease acquired'
-ifconfig flannel.1
+# journalctl  -u flanneld |grep 'Lease acquired'
+# ifconfig flannel.1
 
 $BINDIR/etcdctl \
 --endpoints=${ETCD_ENDPOINTS} \
@@ -276,11 +273,12 @@ $BINDIR/etcdctl \
 --cert-file=$FLANNELDDIR/flanneld.pem \
 --key-file=$FLANNELDDIR/flanneld-key.pem \
 ls ${FLANNEL_ETCD_PREFIX}/subnets
-read -p "Cluster Flannel Deploy Success:" input
+echo "CLUSTER FLANNEL DEPLOY SUCCESS......................"
+read -p "CLUSTER FLANNEL DEPLOY SUCCESS:" input
 if [ "$input" != "y" ]; then
   exit
 fi
-echo "FLANNEL CONFIG SUCCESS................................"
+echo "FLANNEL DEPLOY SUCCESS................................"
 # FLANNEL CONFIG SUCCESS
 # ------------------------------------------------------------------------------------
 
@@ -302,8 +300,8 @@ Documentation=http://docs.docker.io
 [Service]
 Environment="PATH=/root/local/bin:/bin:/sbin:/usr/bin:/usr/sbin"
 EnvironmentFile=-/run/flannel/docker
-ExecStart=/root/local/bin/dockerd --log-level=error $DOCKER_NETWORK_OPTIONS --insecure-registry=${REGISTRY_DOMAIN}
-ExecReload=/bin/kill -s HUP $MAINPID
+ExecStart=/root/local/bin/dockerd --log-level=error \$DOCKER_NETWORK_OPTIONS --insecure-registry=${REGISTRY_DOMAIN}
+ExecReload=/bin/kill -s HUP \$MAINPID
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=infinity
@@ -325,14 +323,14 @@ EOF
 
 sudo cp docker.service /etc/systemd/system/docker.service
 sudo systemctl daemon-reload
-sudo systemctl stop firewalld
-sudo systemctl disable firewalld
+# sudo systemctl stop firewalld
+# sudo systemctl disable firewalld
+sudo iptables -F && sudo iptables -X && sudo iptables -F -t nat && sudo iptables -X -t nat
 sudo systemctl stop iptables
 sudo systemctl disable iptables
 sudo systemctl enable docker >/dev/null 2>&1
 sudo systemctl start docker
-docker version
-echo "Docker Deploy Success................................"
+echo "DOCKER DEPLOY SUCCESS................................"
 # ------------------------------------------------------------------------------------
 
 # DEPLOY KUBELET
@@ -347,22 +345,23 @@ cd $DEPLOYDIR/kubernetes
 tar -xf  kubernetes-src.tar.gz
 sudo cp -r $DEPLOYDIR/kubernetes/server/bin/{kube-proxy,kubelet} $BINDIR/
 cd $DEPLOYDIR
+kubectl create clusterrolebinding kubelet-bootstrap --clusterrole=system:node-bootstrapper --user=kubelet-bootstrap
 kubectl config set-cluster kubernetes \
 --certificate-authority=/etc/kubernetes/ssl/ca.pem \
 --embed-certs=true \
 --server=${KUBE_APISERVER} \
---kubeconfig=bootstrap.kubeconfig
+--kubeconfig=bootstrap.kubeconfig >/dev/null 2>&1
 
 kubectl config set-credentials kubelet-bootstrap \
 --token=${BOOTSTRAP_TOKEN} \
---kubeconfig=bootstrap.kubeconfig
+--kubeconfig=bootstrap.kubeconfig >/dev/null 2>&1
 
 kubectl config set-context default \
 --cluster=kubernetes \
 --user=kubelet-bootstrap \
---kubeconfig=bootstrap.kubeconfig
+--kubeconfig=bootstrap.kubeconfig >/dev/null 2>&1
 
-kubectl config use-context default --kubeconfig=bootstrap.kubeconfig
+kubectl config use-context default --kubeconfig=bootstrap.kubeconfig >/dev/null 2>&1
 mv bootstrap.kubeconfig /etc/kubernetes/
 cd $DEPLOYDIR
 sudo mkdir /var/lib/kubelet
@@ -378,7 +377,7 @@ WorkingDirectory=/var/lib/kubelet
 ExecStart=/root/local/bin/kubelet \\
   --address=${NODE_IP} \\
   --hostname-override=${NODE_IP} \\
-  --pod-infra-container-image=${REGISTRY_HUB} \\
+  --pod-infra-container-image=${BASE_PODS} \\
   --experimental-bootstrap-kubeconfig=/etc/kubernetes/bootstrap.kubeconfig \\
   --kubeconfig=/etc/kubernetes/kubelet.kubeconfig \\
   --require-kubeconfig \\
@@ -399,20 +398,19 @@ EOF
 
 sudo cp kubelet.service /etc/systemd/system/kubelet.service
 sudo systemctl daemon-reload
-sudo systemctl enable kubelet >/dev/null 2>&1
-sudo systemctl restart kubelet
-echo "Waiting Master Deploy................................"
-read -p "Master Deploy Success?:" input
+sudo systemctl enable kubelet
+sudo systemctl start kubelet
+echo "WAITING MASTER DEPLOY................................"
+read -p "MASTER DEPLOY SUCCESS?:" input
 if [ "$input" != "y" ]; then
   exit
 fi
-for i in `kubectl get csr |awk '{print $1}' | sed -n '2,$p'`;do kubectl certificate approve $i;done
-kubectl get nodes
+for i in `kubectl get csr |awk '{print $1}' | sed -n '2,$p'`;do kubectl certificate approve $i >/dev/null 2>&1;done
 if [ ! -f "/etc/kubernetes/kubelet.kubeconfig" ]; then
   echo "Node Insert Cluster Failed..............................."
   exit
 fi
-echo "Kubelet Start Success..............................."
+echo "KUBELET DEPLOY SUCCESS..............................."
 # ------------------------------------------------------------------------------------
 
 # DEPLOY KUBE PROXY
@@ -440,27 +438,27 @@ EOF
 cfssl gencert -ca=$KUBESSLDIR/ca.pem \
 -ca-key=$KUBESSLDIR/ca-key.pem \
 -config=$KUBESSLDIR/ca-config.json \
--profile=kubernetes  kube-proxy-csr.json | cfssljson -bare kube-proxy
+-profile=kubernetes  kube-proxy-csr.json 2>/dev/null | cfssljson -bare kube-proxy
 sudo cp kube-proxy*.pem $KUBESSLDIR/
 
 kubectl config set-cluster kubernetes \
 --certificate-authority=$KUBESSLDIR/ca.pem \
 --embed-certs=true \
 --server=${KUBE_APISERVER} \
---kubeconfig=kube-proxy.kubeconfig
+--kubeconfig=kube-proxy.kubeconfig >/dev/null 2>&1
 
 kubectl config set-credentials kube-proxy \
 --client-certificate=$KUBESSLDIR/kube-proxy.pem \
 --client-key=$KUBESSLDIR/kube-proxy-key.pem \
 --embed-certs=true \
---kubeconfig=kube-proxy.kubeconfig
+--kubeconfig=kube-proxy.kubeconfig >/dev/null 2>&1
 
 kubectl config set-context default \
 --cluster=kubernetes \
 --user=kube-proxy \
---kubeconfig=kube-proxy.kubeconfig
+--kubeconfig=kube-proxy.kubeconfig >/dev/null 2>&1
 
-kubectl config use-context default --kubeconfig=kube-proxy.kubeconfig
+kubectl config use-context default --kubeconfig=kube-proxy.kubeconfig >/dev/null 2>&1
 cp kube-proxy.kubeconfig /etc/kubernetes/
 
 sudo mkdir -p /var/lib/kube-proxy
@@ -491,5 +489,8 @@ sudo cp kube-proxy.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable kube-proxy >/dev/null 2>&1
 sudo systemctl start kube-proxy
-echo "Kube Proxy Deploy Success..............................."
+echo "KUBE PROXY DEPLOY SUCCESS..............................."
 # ------------------------------------------------------------------------------------
+
+echo "DEPLOY INFO:"
+docker version

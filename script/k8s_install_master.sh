@@ -22,7 +22,6 @@ mkdir -p /root/.kube/
 mkdir -p $YAML/dashboard
 mkdir -p $YAML/dns
 mkdir -p $YAML/heapster
-mkdir /data
 
 service iptables stop
 
@@ -35,6 +34,7 @@ function CheckFileExist()
 }
 
 cat > $BINDIR/environment.sh << EOF
+#TLS Bootstrapping 使用的 Token，可以使用命令 head -c 16 /dev/urandom | od -An -t x | tr -d ' ' 生成
 BOOTSTRAP_TOKEN="41f7e4ba8b7be874fcff18bf5cf41a7c"
 NODE_NAME="etcd-host0"
 NODE_IP="10.10.7.175"
@@ -51,7 +51,7 @@ CLUSTER_KUBERNETES_SVC_IP="10.254.0.1"
 CLUSTER_DNS_SVC_IP="10.254.0.2"
 CLUSTER_DNS_DOMAIN="cluster.local."
 REGISTRY_DOMAIN="harbor.gqichina.com"
-REGISTRY_HUB="harbor.gqichina.com/ops/pod-infrastructure:rhel7"
+BASE_PODS="harbor.gqichina.com/k8s/pod-infrastructure:rhel7"
 EOF
 
 source $BINDIR/environment.sh
@@ -125,11 +125,11 @@ cat > ca-csr.json <<EOF
 }
 EOF
 
-cfssl gencert -initca ca-csr.json | cfssljson -bare ca
+cfssl gencert -initca ca-csr.json 2>/dev/null | cfssljson -bare ca
 sudo cp ca* $KUBESSLDIR
 # SYNC CA TO OTHER MACHINE
-# ssh root@10.10.7.176 "mkdir -p $KUBESSLDIR"
-# ssh root@10.10.7.177 "mkdir -p $KUBESSLDIR"
+ssh -p 6123 root@10.10.7.176 "mkdir -p $KUBESSLDIR"
+ssh -p 6123 root@10.10.7.177 "mkdir -p $KUBESSLDIR"
 scp -P 6123 ca* root@10.10.7.176:$KUBESSLDIR/
 scp -P 6123 ca* root@10.10.7.177:$KUBESSLDIR/
 
@@ -177,7 +177,7 @@ EOF
 cfssl gencert -ca=$KUBESSLDIR/ca.pem \
 -ca-key=$KUBESSLDIR/ca-key.pem \
 -config=$KUBESSLDIR/ca-config.json \
--profile=kubernetes etcd-csr.json | cfssljson -bare etcd
+-profile=kubernetes etcd-csr.json 2>/dev/null | cfssljson -bare etcd
 sudo mv etcd*.pem $ETCDSSLDIR/
 
 sudo mkdir -p /var/lib/etcd
@@ -219,7 +219,6 @@ sudo mv etcd.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable etcd >/dev/null 2>&1
 sudo systemctl start etcd
-sudo systemctl status etcd
 
 # CHECK ETCD CLUSTER
 # ------------------------------------------------------------------------------------
@@ -278,22 +277,24 @@ EOF
 cfssl gencert -ca=$KUBESSLDIR/ca.pem \
 -ca-key=$KUBESSLDIR/ca-key.pem \
 -config=$KUBESSLDIR/ca-config.json \
--profile=kubernetes admin-csr.json | cfssljson -bare admin
+-profile=kubernetes admin-csr.json  2>/dev/null| cfssljson -bare admin
 ls admin*
 sudo mv admin*.pem $KUBESSLDIR/
 
 kubectl config set-cluster kubernetes \
 --certificate-authority=$KUBESSLDIR/ca.pem \
 --embed-certs=true \
---server=${KUBE_APISERVER}
+--server=${KUBE_APISERVER} >/dev/null 2>&1
+
 kubectl config set-credentials admin \
 --client-certificate=$KUBESSLDIR/admin.pem \
 --embed-certs=true \
---client-key=$KUBESSLDIR/admin-key.pem
+--client-key=$KUBESSLDIR/admin-key.pem >/dev/null 2>&1
+
 kubectl config set-context kubernetes \
 --cluster=kubernetes \
---user=admin
-kubectl config use-context kubernetes
+--user=admin >/dev/null 2>&1
+kubectl config use-context kubernetes >/dev/null 2>&1
 
 # ssh root@10.10.7.176 "mkdir -p /root/.kube"
 # ssh root@10.10.7.177 "mkdir -p /root/.kube"
@@ -331,7 +332,7 @@ EOF
 cfssl gencert -ca=$KUBESSLDIR/ca.pem \
 -ca-key=$KUBESSLDIR/ca-key.pem \
 -config=$KUBESSLDIR/ca-config.json \
--profile=kubernetes flanneld-csr.json | cfssljson -bare flanneld
+-profile=kubernetes flanneld-csr.json  2>/dev/null| cfssljson -bare flanneld
 sudo mv flanneld*.pem $FLANNELDDIR
 
 $BINDIR/etcdctl \
@@ -379,8 +380,6 @@ sudo cp flanneld.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable flanneld >/dev/null 2>&1
 sudo systemctl start flanneld
-sudo systemctl status flanneld
-ifconfig flannel.1
 
 $BINDIR/etcdctl \
 --endpoints=${ETCD_ENDPOINTS} \
@@ -388,13 +387,13 @@ $BINDIR/etcdctl \
 --cert-file=$FLANNELDDIR/flanneld.pem \
 --key-file=$FLANNELDDIR/flanneld-key.pem \
 ls ${FLANNEL_ETCD_PREFIX}/subnets
-
-read -p "Please Deploy Flanneld Cluster, If Deploy Finished, Input y or n:" input
+echo "MASTER FLANNEL DEPLOY SUCCESS............................"
+read -p "PLEASE DEPLOY FALNNELD CLUSTER,IF DEPLOY FINISHED, INPUT y or n:" input
 if [ "$input" != "y" ]; then
   exit
 fi
 
-echo "FLANNEL CONFIG SUCCESS................................"
+echo "FLANNEL DEPLOY SUCCESS................................"
 #------------------------------------------------------------------------------------
 
 
@@ -407,7 +406,7 @@ fi
 tar -xf kubernetes-server-linux-amd64.tar.gz
 cd kubernetes
 tar -xf  kubernetes-src.tar.gz
-sudo cp -r server/bin/{kube-apiserver,kube-controller-manager,kube-scheduler,kubectl,kube-proxy,kubelet} $BINDIR
+sudo cp -r server/bin/{kube-apiserver,kube-controller-manager,kube-scheduler,kubectl,kube-proxy,kubelet} $BINDIR/
 cd $DEPLOYDIR
 cat > kubernetes-csr.json <<EOF
 {
@@ -441,19 +440,22 @@ EOF
 cfssl gencert -ca=$KUBESSLDIR/ca.pem \
 -ca-key=$KUBESSLDIR/ca-key.pem \
 -config=$KUBESSLDIR/ca-config.json \
--profile=kubernetes kubernetes-csr.json | cfssljson -bare kubernetes
-
+-profile=kubernetes kubernetes-csr.json  2>/dev/null | cfssljson -bare kubernetes
+echo "kubernetes-key.pem and kubernetes.pem create success.............."
 if [ ! -f "$DEPLOYDIR/kubernetes.pem" ]; then
   echo "Create Kubernetes CA Failed................................"
   exit
 fi
-sudo mv kubernetes*.pem $KUBESSLDIR/
+sudo cp kubernetes*.pem $KUBESSLDIR/
 
 cd $DEPLOYDIR
 cat > token.csv <<EOF
 ${BOOTSTRAP_TOKEN},kubelet-bootstrap,10001,"system:kubelet-bootstrap"
 EOF
-mv token.csv /etc/kubernetes/
+cp token.csv /etc/kubernetes/
+scp -P 6123 token.csv root@10.10.7.176:/etc/kubernetes/
+scp -P 6123 token.csv root@10.10.7.177:/etc/kubernetes/
+
 
 cat  > kube-apiserver.service <<EOF
 [Unit]
@@ -505,7 +507,6 @@ sudo systemctl daemon-reload
 sudo systemctl enable kube-apiserver >/dev/null 2>&1
 sudo systemctl start kube-apiserver
 echo "KUBE APISERVER DEPLOY SUCCESS................................"
-sleep 10
 
 cat > kube-controller-manager.service <<EOF
 [Unit]
@@ -538,7 +539,6 @@ sudo systemctl daemon-reload
 sudo systemctl enable kube-controller-manager >/dev/null 2>&1
 sudo systemctl start kube-controller-manager
 echo "KUBE CONTROLLER MANAGER DEPLOY SUCCESS................................"
-sleep 10
 
 cat > kube-scheduler.service <<EOF
 [Unit]
@@ -562,12 +562,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable kube-scheduler >/dev/null 2>&1
 sudo systemctl start kube-scheduler
 echo "KUBE SCHEDULER DEPLOY SUCCESS................................"
-sleep 10
 kubectl get componentstatuses
-
 echo "MASTER NODE CONFIG SUCCESS................................"
 # ------------------------------------------------------------------------------------
-
 
 
 # DEPLOY CLUSTER NODE
@@ -588,8 +585,8 @@ Documentation=http://docs.docker.io
 [Service]
 Environment="PATH=/root/local/bin:/bin:/sbin:/usr/bin:/usr/sbin"
 EnvironmentFile=-/run/flannel/docker
-ExecStart=/root/local/bin/dockerd --log-level=error $DOCKER_NETWORK_OPTIONS --insecure-registry=${REGISTRY_DOMAIN}
-ExecReload=/bin/kill -s HUP $MAINPID
+ExecStart=/root/local/bin/dockerd --log-level=error \$DOCKER_NETWORK_OPTIONS --insecure-registry=${REGISTRY_DOMAIN}
+ExecReload=/bin/kill -s HUP \$MAINPID
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=infinity
@@ -613,45 +610,36 @@ sudo cp docker.service /etc/systemd/system/docker.service
 sudo systemctl daemon-reload
 # sudo systemctl stop firewalld
 # sudo systemctl disable firewalld
+sudo iptables -F && sudo iptables -X && sudo iptables -F -t nat && sudo iptables -X -t nat
 sudo systemctl stop iptables
 sudo systemctl disable iptables
 sudo systemctl enable docker >/dev/null 2>&1
 sudo systemctl start docker
-docker version
-echo "Docker Deploy Success................................"
+echo "DOCKER DEPLOY SUCCESS................................"
 # ------------------------------------------------------------------------------------
-
 
 # DEPLOY KUBELET
 # ------------------------------------------------------------------------------------
 cd $DEPLOYDIR
 rm -fr /etc/kubernetes/kubelet.kubeconfig
 kubectl create clusterrolebinding kubelet-bootstrap --clusterrole=system:node-bootstrapper --user=kubelet-bootstrap >/dev/null 2>&1
-if [ ! -f "$DEPLOYDIR/kubernetes-server-linux-amd64.tar.gz" ]; then
-  wget -c https://dl.k8s.io/v1.6.2/kubernetes-server-linux-amd64.tar.gz -P $DEPLOYDIR
-fi
-tar -xf kubernetes-server-linux-amd64.tar.gz
-cd $DEPLOYDIR/kubernetes
-tar -xf  kubernetes-src.tar.gz
-sudo cp -r $DEPLOYDIR/kubernetes/server/bin/{kube-proxy,kubelet} $BINDIR/
-cd $DEPLOYDIR
 kubectl config set-cluster kubernetes \
 --certificate-authority=/etc/kubernetes/ssl/ca.pem \
 --embed-certs=true \
 --server=${KUBE_APISERVER} \
---kubeconfig=bootstrap.kubeconfig
+--kubeconfig=bootstrap.kubeconfig >/dev/null 2>&1
 
 kubectl config set-credentials kubelet-bootstrap \
 --token=${BOOTSTRAP_TOKEN} \
---kubeconfig=bootstrap.kubeconfig
+--kubeconfig=bootstrap.kubeconfig >/dev/null 2>&1
 
 kubectl config set-context default \
 --cluster=kubernetes \
 --user=kubelet-bootstrap \
---kubeconfig=bootstrap.kubeconfig
+--kubeconfig=bootstrap.kubeconfig >/dev/null 2>&1
 
-kubectl config use-context default --kubeconfig=bootstrap.kubeconfig
-mv bootstrap.kubeconfig /etc/kubernetes/
+kubectl config use-context default --kubeconfig=bootstrap.kubeconfig >/dev/null 2>&1
+cp bootstrap.kubeconfig /etc/kubernetes/
 cd $DEPLOYDIR
 sudo mkdir /var/lib/kubelet
 cat > kubelet.service <<EOF
@@ -666,7 +654,7 @@ WorkingDirectory=/var/lib/kubelet
 ExecStart=/root/local/bin/kubelet \\
   --address=${NODE_IP} \\
   --hostname-override=${NODE_IP} \\
-  --pod-infra-container-image=${REGISTRY_HUB} \\
+  --pod-infra-container-image=${BASE_PODS} \\
   --experimental-bootstrap-kubeconfig=/etc/kubernetes/bootstrap.kubeconfig \\
   --kubeconfig=/etc/kubernetes/kubelet.kubeconfig \\
   --require-kubeconfig \\
@@ -687,16 +675,14 @@ EOF
 
 sudo cp kubelet.service /etc/systemd/system/kubelet.service
 sudo systemctl daemon-reload
-sudo systemctl enable kubelet >/dev/null 2>&1
-sudo systemctl start kubelet
-for i in `kubectl get csr |awk '{print $1}' | sed -n '2,$p'`;do kubectl certificate approve $i;done
-kubectl get nodes
-if [ ! -f "/etc/kubernetes/kubelet.kubeconfig" ]; then
-  echo "Node Insert Cluster Failed..............................."
-  exit
-fi
-echo "Kubelet Start Success..............................."
-
+sudo systemctl enable kubelet
+sudo systemctl restart kubelet
+for i in `kubectl get csr |awk '{print $1}' | sed -n '2,$p'`;do kubectl certificate approve $i >/dev/null 2>&1 ;done
+# if [ ! -f "/etc/kubernetes/kubelet.kubeconfig" ]; then
+#   echo "Node Insert Cluster Failed..............................."
+#   exit
+# fi
+echo "KUBELET START SUCCESS..............................."
 
 # DEPLOY KUBE PROXY
 # ------------------------------------------------------------------------------------
@@ -723,27 +709,27 @@ EOF
 cfssl gencert -ca=$KUBESSLDIR/ca.pem \
 -ca-key=$KUBESSLDIR/ca-key.pem \
 -config=$KUBESSLDIR/ca-config.json \
--profile=kubernetes  kube-proxy-csr.json | cfssljson -bare kube-proxy
+-profile=kubernetes  kube-proxy-csr.json  2>/dev/null | cfssljson -bare kube-proxy
 sudo cp kube-proxy*.pem $KUBESSLDIR/
 
 kubectl config set-cluster kubernetes \
 --certificate-authority=$KUBESSLDIR/ca.pem \
 --embed-certs=true \
 --server=${KUBE_APISERVER} \
---kubeconfig=kube-proxy.kubeconfig
+--kubeconfig=kube-proxy.kubeconfig >/dev/null 2>&1
 
 kubectl config set-credentials kube-proxy \
 --client-certificate=$KUBESSLDIR/kube-proxy.pem \
 --client-key=$KUBESSLDIR/kube-proxy-key.pem \
 --embed-certs=true \
---kubeconfig=kube-proxy.kubeconfig
+--kubeconfig=kube-proxy.kubeconfig >/dev/null 2>&1
 
 kubectl config set-context default \
 --cluster=kubernetes \
 --user=kube-proxy \
---kubeconfig=kube-proxy.kubeconfig
+--kubeconfig=kube-proxy.kubeconfig >/dev/null 2>&1
 
-kubectl config use-context default --kubeconfig=kube-proxy.kubeconfig
+kubectl config use-context default --kubeconfig=kube-proxy.kubeconfig >/dev/null 2>&1
 cp kube-proxy.kubeconfig /etc/kubernetes/
 
 sudo mkdir -p /var/lib/kube-proxy
@@ -772,11 +758,16 @@ EOF
 
 sudo cp kube-proxy.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable kube-proxy >/dev/null 2>&1
+sudo systemctl enable kube-proxy 
 sudo systemctl start kube-proxy
-echo "Kube Proxy Deploy Success..............................."
+echo "KUBE PROXY DEPLOY SUCCESS..............................."
 # ------------------------------------------------------------------------------------
 
+echo "MASTER DEPLOY SUCCESS, PLEASE DEPLOY CLUSTER................................"
+read -p "CLUSTER DEPLOY SUCCESS?:" input
+if [ "$input" != "y" ]; then
+  exit
+fi
 
 # Deploy Dns Plugin
 # ------------------------------------------------------------------------------------
@@ -980,8 +971,8 @@ spec:
     port: 53
     protocol: TCP
 EOF
-kubectl create -f .
-echo "Kube Dns Deploy Success................................"
+kubectl create -f . >/dev/null 2>&1
+echo "KUBE DNS DEPLOY SUCCESS..............................."
 # ------------------------------------------------------------------------------------
 
 
@@ -1074,384 +1065,386 @@ spec:
   - port: 80
     targetPort: 9090
 EOF
-kubectl create -f  .
-kubectl get services kubernetes-dashboard -n kube-system
-echo "Kube Dashboard Deploy Success................................"
+kubectl create -f  . >/dev/null 2>&1
+echo "KUBE DASHBOARD DEPLOY SUCCESS................................"
 # ------------------------------------------------------------------------------------
 
 
-# Deploy Dashboard Heapster
-# ------------------------------------------------------------------------------------
-cd $YAML/heapster
-cat > grafana-deployment.yaml <<EOF
-apiVersion: extensions/v1beta1
-kind: Deployment
-metadata:
-  name: monitoring-grafana
-  namespace: kube-system
-spec:
-  replicas: 1
-  template:
-    metadata:
-      labels:
-        task: monitoring
-        k8s-app: grafana
-    spec:
-      containers:
-      - name: grafana
-        image: lvanneo/heapster-grafana-amd64:v4.0.2
-        ports:
-          - containerPort: 3000
-            protocol: TCP
-        volumeMounts:
-        - mountPath: /var
-          name: grafana-storage
-        env:
-        - name: INFLUXDB_HOST
-          value: monitoring-influxdb
-        - name: GRAFANA_PORT
-          value: "3000"
-          # The following env variables are required to make Grafana accessible via
-          # the kubernetes api-server proxy. On production clusters, we recommend
-          # removing these env variables, setup auth for grafana, and expose the grafana
-          # service using a LoadBalancer or a public IP.
-        - name: GF_AUTH_BASIC_ENABLED
-          value: "false"
-        - name: GF_AUTH_ANONYMOUS_ENABLED
-          value: "true"
-        - name: GF_AUTH_ANONYMOUS_ORG_ROLE
-          value: Admin
-        - name: GF_SERVER_ROOT_URL
-          # If you're only using the API Server proxy, set this value instead:
-          value: /api/v1/proxy/namespaces/kube-system/services/monitoring-grafana/
-          #value: /
-      volumes:
-      - name: grafana-storage
-        emptyDir: {}
-EOF
-cat > grafana-service.yaml <<EOF
-apiVersion: v1
-kind: Service
-metadata:
-  labels:
-    # For use as a Cluster add-on (https://github.com/kubernetes/kubernetes/tree/master/cluster/addons)
-    # If you are NOT using this as an addon, you should comment out this line.
-    kubernetes.io/cluster-service: 'true'
-    kubernetes.io/name: monitoring-grafana
-  name: monitoring-grafana
-  namespace: kube-system
-spec:
-  # In a production setup, we recommend accessing Grafana through an external Loadbalancer
-  # or through a public IP.
-  # type: LoadBalancer
-  # You could also use NodePort to expose the service at a randomly-generated port
-  ports:
-  - port : 80
-    targetPort: 3000
-  selector:
-    k8s-app: grafana
-EOF
-cat > heapster-deployment.yaml <<EOF
-apiVersion: extensions/v1beta1
-kind: Deployment
-metadata:
-  name: heapster
-  namespace: kube-system
-spec:
-  replicas: 1
-  template:
-    metadata:
-      labels:
-        task: monitoring
-        k8s-app: heapster
-    spec:
-      serviceAccountName: heapster
-      containers:
-      - name: heapster
-        image: lvanneo/heapster-amd64:v1.3.0-beta.1
-        imagePullPolicy: IfNotPresent
-        command:
-        - /heapster
-        - --source=kubernetes:https://kubernetes.default
-        - --sink=influxdb:http://monitoring-influxdb:8086
-EOF
-cat > heapster-rbac.yaml <<EOF
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: heapster
-  namespace: kube-system
+# # Deploy Dashboard Heapster
+# # ------------------------------------------------------------------------------------
+# cd $YAML/heapster
+# cat > grafana-deployment.yaml <<EOF
+# apiVersion: extensions/v1beta1
+# kind: Deployment
+# metadata:
+#   name: monitoring-grafana
+#   namespace: kube-system
+# spec:
+#   replicas: 1
+#   template:
+#     metadata:
+#       labels:
+#         task: monitoring
+#         k8s-app: grafana
+#     spec:
+#       containers:
+#       - name: grafana
+#         image: lvanneo/heapster-grafana-amd64:v4.0.2
+#         ports:
+#           - containerPort: 3000
+#             protocol: TCP
+#         volumeMounts:
+#         - mountPath: /var
+#           name: grafana-storage
+#         env:
+#         - name: INFLUXDB_HOST
+#           value: monitoring-influxdb
+#         - name: GRAFANA_PORT
+#           value: "3000"
+#           # The following env variables are required to make Grafana accessible via
+#           # the kubernetes api-server proxy. On production clusters, we recommend
+#           # removing these env variables, setup auth for grafana, and expose the grafana
+#           # service using a LoadBalancer or a public IP.
+#         - name: GF_AUTH_BASIC_ENABLED
+#           value: "false"
+#         - name: GF_AUTH_ANONYMOUS_ENABLED
+#           value: "true"
+#         - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+#           value: Admin
+#         - name: GF_SERVER_ROOT_URL
+#           # If you're only using the API Server proxy, set this value instead:
+#           value: /api/v1/proxy/namespaces/kube-system/services/monitoring-grafana/
+#           #value: /
+#       volumes:
+#       - name: grafana-storage
+#         emptyDir: {}
+# EOF
+# cat > grafana-service.yaml <<EOF
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   labels:
+#     # For use as a Cluster add-on (https://github.com/kubernetes/kubernetes/tree/master/cluster/addons)
+#     # If you are NOT using this as an addon, you should comment out this line.
+#     kubernetes.io/cluster-service: 'true'
+#     kubernetes.io/name: monitoring-grafana
+#   name: monitoring-grafana
+#   namespace: kube-system
+# spec:
+#   # In a production setup, we recommend accessing Grafana through an external Loadbalancer
+#   # or through a public IP.
+#   # type: LoadBalancer
+#   # You could also use NodePort to expose the service at a randomly-generated port
+#   ports:
+#   - port : 80
+#     targetPort: 3000
+#   selector:
+#     k8s-app: grafana
+# EOF
+# cat > heapster-deployment.yaml <<EOF
+# apiVersion: extensions/v1beta1
+# kind: Deployment
+# metadata:
+#   name: heapster
+#   namespace: kube-system
+# spec:
+#   replicas: 1
+#   template:
+#     metadata:
+#       labels:
+#         task: monitoring
+#         k8s-app: heapster
+#     spec:
+#       serviceAccountName: heapster
+#       containers:
+#       - name: heapster
+#         image: lvanneo/heapster-amd64:v1.3.0-beta.1
+#         imagePullPolicy: IfNotPresent
+#         command:
+#         - /heapster
+#         - --source=kubernetes:https://kubernetes.default
+#         - --sink=influxdb:http://monitoring-influxdb:8086
+# EOF
+# cat > heapster-rbac.yaml <<EOF
+# apiVersion: v1
+# kind: ServiceAccount
+# metadata:
+#   name: heapster
+#   namespace: kube-system
 
----
+# ---
 
-kind: ClusterRoleBinding
-apiVersion: rbac.authorization.k8s.io/v1alpha1
-metadata:
-  name: heapster
-subjects:
-  - kind: ServiceAccount
-    name: heapster
-    namespace: kube-system
-roleRef:
-  kind: ClusterRole
-  name: system:heapster
-  apiGroup: rbac.authorization.k8s.io
-EOF
-cat > heapster-service.yaml <<EOF
-apiVersion: v1
-kind: Service
-metadata:
-  labels:
-    task: monitoring
-    # For use as a Cluster add-on (https://github.com/kubernetes/kubernetes/tree/master/cluster/addons)
-    # If you are NOT using this as an addon, you should comment out this line.
-    kubernetes.io/cluster-service: 'true'
-    kubernetes.io/name: Heapster
-  name: heapster
-  namespace: kube-system
-spec:
-  ports:
-  - port: 80
-    targetPort: 8082
-  selector:
-    k8s-app: heapster
-EOF
-cat > influxdb-cm.yaml <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: influxdb-config
-  namespace: kube-system
-data:
-  config.toml: |
-    reporting-disabled = true
-    bind-address = ":8088"
-    [meta]
-      dir = "/data/meta"
-      retention-autocreate = true
-      logging-enabled = true
-    [data]
-      dir = "/data/data"
-      wal-dir = "/data/wal"
-      query-log-enabled = true
-      cache-max-memory-size = 1073741824
-      cache-snapshot-memory-size = 26214400
-      cache-snapshot-write-cold-duration = "10m0s"
-      compact-full-write-cold-duration = "4h0m0s"
-      max-series-per-database = 1000000
-      max-values-per-tag = 100000
-      trace-logging-enabled = false
-    [coordinator]
-      write-timeout = "10s"
-      max-concurrent-queries = 0
-      query-timeout = "0s"
-      log-queries-after = "0s"
-      max-select-point = 0
-      max-select-series = 0
-      max-select-buckets = 0
-    [retention]
-      enabled = true
-      check-interval = "30m0s"
-    [admin]
-      enabled = true
-      bind-address = ":8083"
-      https-enabled = false
-      https-certificate = "/etc/ssl/influxdb.pem"
-    [shard-precreation]
-      enabled = true
-      check-interval = "10m0s"
-      advance-period = "30m0s"
-    [monitor]
-      store-enabled = true
-      store-database = "_internal"
-      store-interval = "10s"
-    [subscriber]
-      enabled = true
-      http-timeout = "30s"
-      insecure-skip-verify = false
-      ca-certs = ""
-      write-concurrency = 40
-      write-buffer-size = 1000
-    [http]
-      enabled = true
-      bind-address = ":8086"
-      auth-enabled = false
-      log-enabled = true
-      write-tracing = false
-      pprof-enabled = false
-      https-enabled = false
-      https-certificate = "/etc/ssl/influxdb.pem"
-      https-private-key = ""
-      max-row-limit = 10000
-      max-connection-limit = 0
-      shared-secret = ""
-      realm = "InfluxDB"
-      unix-socket-enabled = false
-      bind-socket = "/var/run/influxdb.sock"
-    [[graphite]]
-      enabled = false
-      bind-address = ":2003"
-      database = "graphite"
-      retention-policy = ""
-      protocol = "tcp"
-      batch-size = 5000
-      batch-pending = 10
-      batch-timeout = "1s"
-      consistency-level = "one"
-      separator = "."
-      udp-read-buffer = 0
-    [[collectd]]
-      enabled = false
-      bind-address = ":25826"
-      database = "collectd"
-      retention-policy = ""
-      batch-size = 5000
-      batch-pending = 10
-      batch-timeout = "10s"
-      read-buffer = 0
-      typesdb = "/usr/share/collectd/types.db"
-    [[opentsdb]]
-      enabled = false
-      bind-address = ":4242"
-      database = "opentsdb"
-      retention-policy = ""
-      consistency-level = "one"
-      tls-enabled = false
-      certificate = "/etc/ssl/influxdb.pem"
-      batch-size = 1000
-      batch-pending = 5
-      batch-timeout = "1s"
-      log-point-errors = true
-    [[udp]]
-      enabled = false
-      bind-address = ":8089"
-      database = "udp"
-      retention-policy = ""
-      batch-size = 5000
-      batch-pending = 10
-      read-buffer = 0
-      batch-timeout = "1s"
-      precision = ""
-    [continuous_queries]
-      log-enabled = true
-      enabled = true
-      run-interval = "1s"
-EOF
-cat > influxdb-deployment.yaml <<EOF
-apiVersion: extensions/v1beta1
-kind: Deployment
-metadata:
-  name: monitoring-influxdb
-  namespace: kube-system
-spec:
-  replicas: 1
-  template:
-    metadata:
-      labels:
-        task: monitoring
-        k8s-app: influxdb
-    spec:
-      containers:
-      - name: influxdb
-        image: lvanneo/heapster-influxdb-amd64:v1.1.1
-        volumeMounts:
-        - mountPath: /data
-          name: influxdb-storage
-        - mountPath: /etc/
-          name: influxdb-config
-      volumes:
-      - name: influxdb-storage
-        emptyDir: {}
-      - name: influxdb-config
-        configMap:
-          name: influxdb-config
-EOF
-cat > influxdb-service.yaml <<EOF
-apiVersion: v1
-kind: Service
-metadata:
-  labels:
-    task: monitoring
-    # For use as a Cluster add-on (https://github.com/kubernetes/kubernetes/tree/master/cluster/addons)
-    # If you are NOT using this as an addon, you should comment out this line.
-    kubernetes.io/cluster-service: 'true'
-    kubernetes.io/name: monitoring-influxdb
-  name: monitoring-influxdb
-  namespace: kube-system
-spec:
-  type: NodePort
-  ports:
-  - port: 8086
-    targetPort: 8086
-    name: http
-  - port: 8083
-    targetPort: 8083
-    name: admin
-  selector:
-    k8s-app: influxdb
-EOF
-kubectl create -f  .
-echo "Kube Dashboard Heapster Deploy Sucess......................"
-# ------------------------------------------------------------------------------------
+# kind: ClusterRoleBinding
+# apiVersion: rbac.authorization.k8s.io/v1alpha1
+# metadata:
+#   name: heapster
+# subjects:
+#   - kind: ServiceAccount
+#     name: heapster
+#     namespace: kube-system
+# roleRef:
+#   kind: ClusterRole
+#   name: system:heapster
+#   apiGroup: rbac.authorization.k8s.io
+# EOF
+# cat > heapster-service.yaml <<EOF
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   labels:
+#     task: monitoring
+#     # For use as a Cluster add-on (https://github.com/kubernetes/kubernetes/tree/master/cluster/addons)
+#     # If you are NOT using this as an addon, you should comment out this line.
+#     kubernetes.io/cluster-service: 'true'
+#     kubernetes.io/name: Heapster
+#   name: heapster
+#   namespace: kube-system
+# spec:
+#   ports:
+#   - port: 80
+#     targetPort: 8082
+#   selector:
+#     k8s-app: heapster
+# EOF
+# cat > influxdb-cm.yaml <<EOF
+# apiVersion: v1
+# kind: ConfigMap
+# metadata:
+#   name: influxdb-config
+#   namespace: kube-system
+# data:
+#   config.toml: |
+#     reporting-disabled = true
+#     bind-address = ":8088"
+#     [meta]
+#       dir = "/data/meta"
+#       retention-autocreate = true
+#       logging-enabled = true
+#     [data]
+#       dir = "/data/data"
+#       wal-dir = "/data/wal"
+#       query-log-enabled = true
+#       cache-max-memory-size = 1073741824
+#       cache-snapshot-memory-size = 26214400
+#       cache-snapshot-write-cold-duration = "10m0s"
+#       compact-full-write-cold-duration = "4h0m0s"
+#       max-series-per-database = 1000000
+#       max-values-per-tag = 100000
+#       trace-logging-enabled = false
+#     [coordinator]
+#       write-timeout = "10s"
+#       max-concurrent-queries = 0
+#       query-timeout = "0s"
+#       log-queries-after = "0s"
+#       max-select-point = 0
+#       max-select-series = 0
+#       max-select-buckets = 0
+#     [retention]
+#       enabled = true
+#       check-interval = "30m0s"
+#     [admin]
+#       enabled = true
+#       bind-address = ":8083"
+#       https-enabled = false
+#       https-certificate = "/etc/ssl/influxdb.pem"
+#     [shard-precreation]
+#       enabled = true
+#       check-interval = "10m0s"
+#       advance-period = "30m0s"
+#     [monitor]
+#       store-enabled = true
+#       store-database = "_internal"
+#       store-interval = "10s"
+#     [subscriber]
+#       enabled = true
+#       http-timeout = "30s"
+#       insecure-skip-verify = false
+#       ca-certs = ""
+#       write-concurrency = 40
+#       write-buffer-size = 1000
+#     [http]
+#       enabled = true
+#       bind-address = ":8086"
+#       auth-enabled = false
+#       log-enabled = true
+#       write-tracing = false
+#       pprof-enabled = false
+#       https-enabled = false
+#       https-certificate = "/etc/ssl/influxdb.pem"
+#       https-private-key = ""
+#       max-row-limit = 10000
+#       max-connection-limit = 0
+#       shared-secret = ""
+#       realm = "InfluxDB"
+#       unix-socket-enabled = false
+#       bind-socket = "/var/run/influxdb.sock"
+#     [[graphite]]
+#       enabled = false
+#       bind-address = ":2003"
+#       database = "graphite"
+#       retention-policy = ""
+#       protocol = "tcp"
+#       batch-size = 5000
+#       batch-pending = 10
+#       batch-timeout = "1s"
+#       consistency-level = "one"
+#       separator = "."
+#       udp-read-buffer = 0
+#     [[collectd]]
+#       enabled = false
+#       bind-address = ":25826"
+#       database = "collectd"
+#       retention-policy = ""
+#       batch-size = 5000
+#       batch-pending = 10
+#       batch-timeout = "10s"
+#       read-buffer = 0
+#       typesdb = "/usr/share/collectd/types.db"
+#     [[opentsdb]]
+#       enabled = false
+#       bind-address = ":4242"
+#       database = "opentsdb"
+#       retention-policy = ""
+#       consistency-level = "one"
+#       tls-enabled = false
+#       certificate = "/etc/ssl/influxdb.pem"
+#       batch-size = 1000
+#       batch-pending = 5
+#       batch-timeout = "1s"
+#       log-point-errors = true
+#     [[udp]]
+#       enabled = false
+#       bind-address = ":8089"
+#       database = "udp"
+#       retention-policy = ""
+#       batch-size = 5000
+#       batch-pending = 10
+#       read-buffer = 0
+#       batch-timeout = "1s"
+#       precision = ""
+#     [continuous_queries]
+#       log-enabled = true
+#       enabled = true
+#       run-interval = "1s"
+# EOF
+# cat > influxdb-deployment.yaml <<EOF
+# apiVersion: extensions/v1beta1
+# kind: Deployment
+# metadata:
+#   name: monitoring-influxdb
+#   namespace: kube-system
+# spec:
+#   replicas: 1
+#   template:
+#     metadata:
+#       labels:
+#         task: monitoring
+#         k8s-app: influxdb
+#     spec:
+#       containers:
+#       - name: influxdb
+#         image: lvanneo/heapster-influxdb-amd64:v1.1.1
+#         volumeMounts:
+#         - mountPath: /data
+#           name: influxdb-storage
+#         - mountPath: /etc/
+#           name: influxdb-config
+#       volumes:
+#       - name: influxdb-storage
+#         emptyDir: {}
+#       - name: influxdb-config
+#         configMap:
+#           name: influxdb-config
+# EOF
+# cat > influxdb-service.yaml <<EOF
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   labels:
+#     task: monitoring
+#     # For use as a Cluster add-on (https://github.com/kubernetes/kubernetes/tree/master/cluster/addons)
+#     # If you are NOT using this as an addon, you should comment out this line.
+#     kubernetes.io/cluster-service: 'true'
+#     kubernetes.io/name: monitoring-influxdb
+#   name: monitoring-influxdb
+#   namespace: kube-system
+# spec:
+#   type: NodePort
+#   ports:
+#   - port: 8086
+#     targetPort: 8086
+#     name: http
+#   - port: 8083
+#     targetPort: 8083
+#     name: admin
+#   selector:
+#     k8s-app: influxdb
+# EOF
+# kubectl create -f  . >/dev/null 2>&1
+# echo "Kube Dashboard Heapster Deploy Sucess......................"
+# # ------------------------------------------------------------------------------------
 
-# DEPLOY HARBOR
-# ------------------------------------------------------------------------------------
-cd $DEPLOYDIR
-if [ ! -f "$DEPLOYDIR/docker-compose-Linux-x86_64" ]; then
-  wget -c https://github.com/docker/compose/releases/download/1.12.0/docker-compose-Linux-x86_64 --no-check-certificate -P $DEPLOYDIR
-fi
-cp docker-compose-Linux-x86_64 $BINDIR/docker-compose
-chmod a+x $BINDIR/docker-compose
-export PATH=$BINDIR:$PATH
+# # DEPLOY HARBOR
+# # ------------------------------------------------------------------------------------
+# cd $DEPLOYDIR
+# if [ ! -f "$DEPLOYDIR/docker-compose-Linux-x86_64" ]; then
+#   wget -c https://github.com/docker/compose/releases/download/1.12.0/docker-compose-Linux-x86_64 --no-check-certificate -P $DEPLOYDIR
+# fi
+# cp docker-compose-Linux-x86_64 $BINDIR/docker-compose
+# chmod a+x $BINDIR/docker-compose
+# export PATH=$BINDIR:$PATH
 
-if [ ! -f "$DEPLOYDIR/harbor-offline-installer-v1.1.2.tgz" ]; then
-  wget -c https://github.com/vmware/harbor/releases/download/v1.1.2/harbor-offline-installer-v1.1.2.tgz --no-check-certificate -P $DEPLOYDIR
-fi
-tar -xf harbor-offline-installer-v1.1.2.tgz
-cd $DEPLOYDIR/harbor
-docker load -i harbor.v1.1.2.tar.gz
-cd $DEPLOYDIR
-cat > harbor-csr.json <<EOF
-{
-  "CN": "harbor",
-  "hosts": [
-    "127.0.0.1",
-    "$NODE_IP"
-  ],
-  "key": {
-    "algo": "rsa",
-    "size": 2048
-  },
-  "names": [
-    {
-      "C": "CN",
-      "ST": "BeiJing",
-      "L": "BeiJing",
-      "O": "k8s",
-      "OU": "System"
-    }
-  ]
-}
-EOF
-cfssl gencert -ca=$KUBESSLDIR/ca.pem \
--ca-key=$KUBESSLDIR/ca-key.pem \
--config=$KUBESSLDIR/ca-config.json \
--profile=kubernetes harbor-csr.json | cfssljson -bare harbor
-sudo cp harbor*.pem $HARBORDIR/
+# if [ ! -f "$DEPLOYDIR/harbor-offline-installer-v1.1.2.tgz" ]; then
+#   wget -c https://github.com/vmware/harbor/releases/download/v1.1.2/harbor-offline-installer-v1.1.2.tgz --no-check-certificate -P $DEPLOYDIR
+# fi
+# tar -xf harbor-offline-installer-v1.1.2.tgz
+# cd $DEPLOYDIR/harbor
+# docker load -i harbor.v1.1.2.tar.gz
+# cd $DEPLOYDIR
+# cat > harbor-csr.json <<EOF
+# {
+#   "CN": "harbor",
+#   "hosts": [
+#     "127.0.0.1",
+#     "$NODE_IP"
+#   ],
+#   "key": {
+#     "algo": "rsa",
+#     "size": 2048
+#   },
+#   "names": [
+#     {
+#       "C": "CN",
+#       "ST": "BeiJing",
+#       "L": "BeiJing",
+#       "O": "k8s",
+#       "OU": "System"
+#     }
+#   ]
+# }
+# EOF
+# cfssl gencert -ca=$KUBESSLDIR/ca.pem \
+# -ca-key=$KUBESSLDIR/ca-key.pem \
+# -config=$KUBESSLDIR/ca-config.json \
+# -profile=kubernetes harbor-csr.json | cfssljson -bare harbor
+# sudo cp harbor*.pem $HARBORDIR/
 
-sed -i "s@hostname = reg.mydomain.com@hostname = ${NODE_IP}@g" $DEPLOYDIR/harbor/harbor.cfg
-sed -i "s@ui_url_protocol = http@ui_url_protocol = https@g" $DEPLOYDIR/harbor/harbor.cfg
-sed -i "s@ssl_cert = /data/cert/server.crt@ssl_cert = ${HARBORDIR}/harbor.pem@g" $DEPLOYDIR/harbor/harbor.cfg
-sed -i "s@ssl_cert_key = /data/cert/server.key@ssl_cert_key = ${HARBORDIR}/harbor-key.pem@g" $DEPLOYDIR/harbor/harbor.cfg
-sh $DEPLOYDIR/harbor/install.sh
-echo "Harbor Web: https://${NODE_IP}"
-echo "User/Password: admin/Harbor12345"
-echo "Log Dir: /var/log/harbor"
+# sed -i "s@hostname = reg.mydomain.com@hostname = ${NODE_IP}@g" $DEPLOYDIR/harbor/harbor.cfg
+# sed -i "s@ui_url_protocol = http@ui_url_protocol = https@g" $DEPLOYDIR/harbor/harbor.cfg
+# sed -i "s@ssl_cert = /data/cert/server.crt@ssl_cert = ${HARBORDIR}/harbor.pem@g" $DEPLOYDIR/harbor/harbor.cfg
+# sed -i "s@ssl_cert_key = /data/cert/server.key@ssl_cert_key = ${HARBORDIR}/harbor-key.pem@g" $DEPLOYDIR/harbor/harbor.cfg
+# sh $DEPLOYDIR/harbor/install.sh
+# echo "Harbor Web: https://${NODE_IP}"
+# echo "User/Password: admin/Harbor12345"
+# echo "Log Dir: /var/log/harbor"
 
-sudo mkdir -p /etc/docker/certs.d/${NODE_IP}
-sudo cp ${KUBESSLDIR}/ca.pem /etc/docker/certs.d/${NODE_IP}/ca.crt
+# sudo mkdir -p /etc/docker/certs.d/${NODE_IP}
+# sudo cp ${KUBESSLDIR}/ca.pem /etc/docker/certs.d/${NODE_IP}/ca.crt
 
-echo "Access to harbor..........................."
-docker login 127.0.0.1
-echo "Harbor Deploy Success.........................."
-# ------------------------------------------------------------------------------------
+# echo "Access to harbor..........................."
+# docker login 127.0.0.1
+# echo "Harbor Deploy Success.........................."
+# # ------------------------------------------------------------------------------------
+echo "DEPLOY INFO:"
+docker version
+kubectl cluster-info
