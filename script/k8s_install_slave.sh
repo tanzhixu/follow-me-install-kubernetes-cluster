@@ -2,12 +2,13 @@
 
 # BASE CONFIG
 #---------------------------------------
-DEPLOYDIR="/k8sdeploydir"
+DEPLOYDIR="/data"
 BINDIR="/root/local/bin"
 SSLCONFDIR=$DEPLOYDIR/ssl
 KUBESSLDIR="/etc/kubernetes/ssl"
 ETCDSSLDIR="/etc/etcd/ssl"
 FLANNELDDIR="/etc/flanneld/ssl"
+DOCKERDIR="/etc/docker"
 YAML=$DEPLOYDIR/yaml
 
 mkdir -p $DEPLOYDIR
@@ -16,10 +17,14 @@ mkdir -p $SSLCONFDIR
 mkdir -p $KUBESSLDIR
 mkdir -p $ETCDSSLDIR
 mkdir -p $FLANNELDDIR
+mkdir -p $DOCKERDIR
 mkdir -p $YAML
 mkdir -p /root/.kube/
 
-service iptables stop
+service iptables stop >/dev/null 2>&1
+yum -y install wget 
+echo "net.ipv4.ip_forward = 1" >> /usr/lib/sysctl.d/50-default.conf
+sysctl -p
 
 function CheckFileExist()
 {
@@ -55,7 +60,7 @@ source $BINDIR/environment.sh
 
 #DEPLOY CA
 #---------------------------------------
-cd $DEPLOYDIRC
+cd $DEPLOYDIR
 if [ ! -f "$DEPLOYDIR/cfssl_linux-amd64" ]; then
   wget -c https://pkg.cfssl.org/R1.2/cfssl_linux-amd64 --no-check-certificate -P $DEPLOYDIR
 fi
@@ -172,14 +177,14 @@ for ip in ${NODE_IPS}; do
   --key=$ETCDSSLDIR/etcd-key.pem \
   endpoint health; done
 
-read -p "Cluster ETCD Deploy Success?:" input
+read -p "Cluster etcd deploy success?:" input
 if [ "$input" != "y" ]; then
   exit
 fi
 # ------------------------------------------------------------------------------------
 # ETCD DEPLOY SUCCESS
 # ------------------------------------------------------------------------------------
-echo "ETCD DEPLOY SUCCESS................................"
+echo "Etcd deploy success................................"
 
 # KUBECTL CONFIG
 #------------------------------------------------------------------------------------
@@ -191,13 +196,13 @@ tar -xf kubernetes-client-linux-amd64.tar.gz
 sudo cp kubernetes/client/bin/kube* $BINDIR
 chmod a+x $BINDIR/kube*
 export PATH=$BINDIR:$PATH
-echo "KUBECTL DEPLOY SUCCESS................................"
+echo "Kubectl deploy success................................"
 # ------------------------------------------------------------------------------------
 
 # FLANNEL CONFIG
 # ------------------------------------------------------------------------------------
-echo "WAITING MASTER DEPLOY FLANNEL..............................."
-read -p "MASTER FLANNEL DEPLOY SUCCESS?:" input
+echo "Waitting master deploy flannel..............................."
+read -p "Master flannel deploy success?:" input
 if [ "$input" != "y" ]; then
   exit
 fi
@@ -231,7 +236,7 @@ sudo mv flanneld*.pem $FLANNELDDIR
 if [ ! -f "$DEPLOYDIR/flannel-v0.7.1-linux-amd64.tar.gz" ]; then
   wget -c https://github.com/coreos/flannel/releases/download/v0.7.1/flannel-v0.7.1-linux-amd64.tar.gz -P $DEPLOYDIR
 fi
-CheckFileExist flannel-v0.7.1-linux-amd64.tar.gz
+mkdir flannel
 tar -xf flannel-v0.7.1-linux-amd64.tar.gz -C flannel
 sudo cp flannel/{flanneld,mk-docker-opts.sh} $BINDIR/
 
@@ -262,7 +267,7 @@ EOF
 
 sudo cp flanneld.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable flanneld
+sudo systemctl enable flanneld >/dev/null 2>&1
 sudo systemctl start flanneld
 # journalctl  -u flanneld |grep 'Lease acquired'
 # ifconfig flannel.1
@@ -273,12 +278,11 @@ $BINDIR/etcdctl \
 --cert-file=$FLANNELDDIR/flanneld.pem \
 --key-file=$FLANNELDDIR/flanneld-key.pem \
 ls ${FLANNEL_ETCD_PREFIX}/subnets
-echo "CLUSTER FLANNEL DEPLOY SUCCESS......................"
-read -p "CLUSTER FLANNEL DEPLOY SUCCESS:" input
+read -p "Cluster flannel deploy success:" input
 if [ "$input" != "y" ]; then
   exit
 fi
-echo "FLANNEL DEPLOY SUCCESS................................"
+echo "Flannel deploy success................................"
 # FLANNEL CONFIG SUCCESS
 # ------------------------------------------------------------------------------------
 
@@ -316,7 +320,7 @@ EOF
 
 cat > /etc/docker/daemon.json <<EOF
 {
-  "registry-mirrors": ["https://docker.mirrors.ustc.edu.cn", "hub-mirror.c.163.com"],
+  "registry-mirrors": ["https://docker.mirrors.ustc.edu.cn", "registry.docker-cn.com"],
   "max-concurrent-downloads": 10
 }
 EOF
@@ -326,11 +330,9 @@ sudo systemctl daemon-reload
 # sudo systemctl stop firewalld
 # sudo systemctl disable firewalld
 sudo iptables -F && sudo iptables -X && sudo iptables -F -t nat && sudo iptables -X -t nat
-sudo systemctl stop iptables
-sudo systemctl disable iptables
 sudo systemctl enable docker >/dev/null 2>&1
 sudo systemctl start docker
-echo "DOCKER DEPLOY SUCCESS................................"
+echo "Docker deploy success................................"
 # ------------------------------------------------------------------------------------
 
 # DEPLOY KUBELET
@@ -398,19 +400,19 @@ EOF
 
 sudo cp kubelet.service /etc/systemd/system/kubelet.service
 sudo systemctl daemon-reload
-sudo systemctl enable kubelet
+sudo systemctl enable kubelet >/dev/null 2>&1
 sudo systemctl start kubelet
-echo "WAITING MASTER DEPLOY................................"
-read -p "MASTER DEPLOY SUCCESS?:" input
+echo "Waitting master deploy................................"
+read -p "Master deploy success?:" input
 if [ "$input" != "y" ]; then
   exit
 fi
 for i in `kubectl get csr |awk '{print $1}' | sed -n '2,$p'`;do kubectl certificate approve $i >/dev/null 2>&1;done
 if [ ! -f "/etc/kubernetes/kubelet.kubeconfig" ]; then
-  echo "Node Insert Cluster Failed..............................."
+  echo "Node insert cluster failed..............................."
   exit
 fi
-echo "KUBELET DEPLOY SUCCESS..............................."
+echo "Kubelet deploy success..............................."
 # ------------------------------------------------------------------------------------
 
 # DEPLOY KUBE PROXY
@@ -489,7 +491,7 @@ sudo cp kube-proxy.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable kube-proxy >/dev/null 2>&1
 sudo systemctl start kube-proxy
-echo "KUBE PROXY DEPLOY SUCCESS..............................."
+echo "Kube proxy deploy success..............................."
 # ------------------------------------------------------------------------------------
 
 echo "DEPLOY INFO:"
